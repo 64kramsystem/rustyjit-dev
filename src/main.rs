@@ -1,69 +1,81 @@
 extern crate libc;
 
+use libc::_SC_PAGESIZE;
 use std::mem;
-use std::ops::{Index, IndexMut};
 
-extern "C" {
-    fn memset(s: *mut libc::c_void, c: u32, n: libc::size_t) -> *mut libc::c_void;
-}
-
-const PAGE_SIZE: usize = 4096;
-
+// Can implement Index[Mut] in order to conveniently access the buffer.
+//
 struct JitMemory {
-    contents: *mut u8,
+    buffer: *mut u8,
 }
 
 impl JitMemory {
-    fn new(num_pages: usize) -> JitMemory {
-        let contents: *mut u8;
+    pub fn new(buffer_size: usize) -> Self {
+        let buffer = Self::allocate(buffer_size, 0xC3);
+        Self { buffer }
+    }
+
+    pub fn write(&mut self, source: &[u8]) {
+        unsafe { self.buffer.copy_from(source.as_ptr(), source.len()) }
+    }
+
+    pub fn run<T>(&self) -> T {
+        let entry_point: fn() -> T = unsafe { mem::transmute(self.buffer) };
+        entry_point()
+    }
+
+    fn allocate(buffer_size: usize, fill_value: u8) -> *mut u8 {
+        let page_size = Self::page_size();
+
+        // The rules are a bit more complex (see https://linux.die.net/man/3/posix_memalign).
+        //
+        assert!(
+            buffer_size % page_size == 0,
+            "buffer_size not multiple of page size"
+        );
+
         unsafe {
-            let size = num_pages * PAGE_SIZE;
-            let mut _contents: *mut libc::c_void = mem::uninitialized();
-            libc::posix_memalign(&mut _contents, PAGE_SIZE, size);
+            // Since posix_memalign discards the existing associate memory, we can use init as null
+            // pointer.
+            // We can use MaybeUninit, but in this case it's more verbose and no more useful.
+            //
+            let mut buffer_addr = std::ptr::null_mut();
+
+            // Allocate the memory, aligned to the page.
+            //
+            libc::posix_memalign(&mut buffer_addr, page_size, buffer_size);
+
+            // Set the permissions.
+            //
             libc::mprotect(
-                _contents,
-                size,
+                buffer_addr,
+                buffer_size,
                 libc::PROT_EXEC | libc::PROT_READ | libc::PROT_WRITE,
             );
 
-            memset(_contents, 0xc3, size); // for now, prepopulate with 'RET'
+            // Note that the API accepts a 32 bits value (c_int), however it converts it to an unsigned
+            // char.
+            //
+            libc::memset(buffer_addr, fill_value as i32, buffer_size);
 
-            contents = mem::transmute(_contents);
+            buffer_addr as *mut u8
         }
+    }
 
-        JitMemory { contents: contents }
+    fn page_size() -> usize {
+        unsafe { libc::sysconf(_SC_PAGESIZE) as usize }
     }
 }
 
-impl Index<usize> for JitMemory {
-    type Output = u8;
-
-    fn index(&self, _index: usize) -> &u8 {
-        unsafe { &*self.contents.offset(_index as isize) }
-    }
-}
-
-impl IndexMut<usize> for JitMemory {
-    fn index_mut(&mut self, _index: usize) -> &mut u8 {
-        unsafe { &mut *self.contents.offset(_index as isize) }
-    }
-}
-
-fn run_jit() -> fn() -> i64 {
-    let mut jit: JitMemory = JitMemory::new(1);
-
-    jit[0] = 0x48; // mov RAX, 0x3
-    jit[1] = 0xc7;
-    jit[2] = 0xc0;
-    jit[3] = 0x3;
-    jit[4] = 0;
-    jit[5] = 0;
-    jit[6] = 0;
-
-    unsafe { mem::transmute(jit.contents) }
-}
-
+// A cleaned up version of https://www.jonathanturner.org/building-a-simple-jit-in-rust.
+//
 fn main() {
-    let fun = run_jit();
-    println!("{}", fun());
+    let mut jit: JitMemory = JitMemory::new(4096);
+
+    // mov RAX, 0x3
+    jit.write(&[0x48, 0xc7, 0xc0, 0x3, 0, 0, 0]);
+
+    let result = jit.run::<i64>();
+
+    println!("{}", result);
 }
