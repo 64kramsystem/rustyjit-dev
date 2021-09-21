@@ -4,7 +4,7 @@ use std::mem;
 use std::ops::{Index, IndexMut};
 
 extern "C" {
-    fn memset(s: *mut libc::c_void, c: libc::uint32_t, n: libc::size_t) -> *mut libc::c_void;
+    fn memset(s: *mut libc::c_void, c: u32, n: libc::size_t) -> *mut libc::c_void;
 }
 
 const PAGE_SIZE: usize = 4096;
@@ -49,7 +49,7 @@ impl IndexMut<usize> for JitMemory {
     }
 }
 
-fn run_jit() -> (fn() -> i64) {
+fn run_jit() -> fn() -> i64 {
     let mut jit: JitMemory = JitMemory::new(1);
 
     jit[0] = 0x48; // mov RAX, 0x3
