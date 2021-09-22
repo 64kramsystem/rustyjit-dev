@@ -7,12 +7,16 @@ use std::mem;
 //
 struct JitMemory {
     buffer: *mut u8,
+    buffer_size: usize,
 }
 
 impl JitMemory {
     pub fn new(buffer_size: usize) -> Self {
         let buffer = Self::allocate(buffer_size, 0xC3);
-        Self { buffer }
+        Self {
+            buffer,
+            buffer_size,
+        }
     }
 
     pub fn write(&mut self, source: &[u8]) {
@@ -64,6 +68,16 @@ impl JitMemory {
 
     fn page_size() -> usize {
         unsafe { libc::sysconf(_SC_PAGESIZE) as usize }
+    }
+}
+
+// Not necessary, but clean.
+//
+impl Drop for JitMemory {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.buffer as *mut _, self.buffer_size);
+        }
     }
 }
 
